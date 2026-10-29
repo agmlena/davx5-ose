@@ -128,7 +128,8 @@ fun StandardLoginTypePage_Preview() {
         specificLoginTypes = listOf(
             FastmailLogin,
             GoogleLogin,
-            NextcloudLogin
+            NextcloudLogin,
+            CustomOAuthLogin
         ),
         selectedLoginType = UrlLogin,
         onSelectLoginType = {},

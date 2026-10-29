@@ -27,7 +27,8 @@ class StandardLoginTypesProvider @Inject constructor(
     private val specificLoginTypes = listOf(
         FastmailLogin,
         GoogleLogin,
-        NextcloudLogin
+        NextcloudLogin,
+        CustomOAuthLogin
     )
 
     override val defaultLoginType = UrlLogin
