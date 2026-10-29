@@ -21,6 +21,7 @@ import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import net.openid.appauth.AuthorizationException
 import net.openid.appauth.AuthorizationRequest
@@ -57,11 +58,15 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
         val issuer: String = "",
         val scopes: String = OAuthCustom.DEFAULT_SCOPES.joinToString(" "),
         val manualIssuer: Boolean = false,
+        /** `scopes_supported` from the discovered metadata, shown as a hint only */
+        val advertisedScopes: List<String> = emptyList(),
         val busy: Boolean = false,
         val error: String? = null,
 
         /** set when the browser should be opened; cleared by [requestLaunched] */
         val pendingRequest: AuthorizationRequest? = null,
+        /** https base URL the [pendingRequest] was prepared for; becomes the account's base URI */
+        val normalizedBaseUrl: String? = null,
 
         /** login info (set after successful login) */
         val result: LoginInfo? = null
@@ -85,20 +90,30 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
     /** Starts discovery (or uses the manual issuer) and prepares the authorization request. */
     fun continueClicked() {
         val state = uiState
-        uiState = state.copy(busy = true, error = null, pendingRequest = null)
+        uiState = state.copy(busy = true, error = null, pendingRequest = null, normalizedBaseUrl = null)
         viewModelScope.launch {
             try {
+                // the base URL must be https on both paths: it receives the Bearer token later
+                val baseUrl = OAuthDiscovery.normalizeBaseUrl(state.baseUrl)
+                if (baseUrl == null) {
+                    uiState = uiState.copy(busy = false, error = context.getString(R.string.login_custom_oauth_https_base_url))
+                    return@launch
+                }
+
                 val issuer = if (state.manualIssuer) {
                     state.issuer.trim().also {
-                        if (!it.startsWith("https://")) {
-                            uiState = uiState.copy(busy = false, error = "The issuer URL must start with https://")
+                        if (!it.startsWith("https://", ignoreCase = true)) {
+                            uiState = uiState.copy(busy = false, error = context.getString(R.string.login_custom_oauth_https_issuer))
                             return@launch
                         }
                     }
-                } else when (val outcome = discovery.discover(state.baseUrl)) {
-                    is DiscoveryOutcome.Found -> outcome.metadata.issuer
+                } else when (val outcome = discovery.discover(baseUrl)) {
+                    is DiscoveryOutcome.Found -> {
+                        uiState = uiState.copy(advertisedScopes = outcome.metadata.scopesSupported)
+                        outcome.metadata.issuer
+                    }
                     is DiscoveryOutcome.Failed -> {
-                        uiState = uiState.copy(busy = false, manualIssuer = true, error = outcome.reason)
+                        uiState = uiState.copy(busy = false, manualIssuer = true, advertisedScopes = emptyList(), error = outcome.reason)
                         return@launch
                     }
                 }
@@ -108,7 +123,9 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
                 val scopes = state.scopes.split(' ', '\n').filter { it.isNotBlank() }
                     .ifEmpty { OAuthCustom.DEFAULT_SCOPES }
                 val request = oAuthCustom.signIn(config, state.clientId.trim(), scopes)
-                uiState = uiState.copy(busy = false, pendingRequest = request)
+                uiState = uiState.copy(busy = false, pendingRequest = request, normalizedBaseUrl = baseUrl)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.log(Level.WARNING, "Couldn't prepare OAuth login", e)
                 uiState = uiState.copy(busy = false, manualIssuer = true, error = e.message ?: e.javaClass.simpleName)
@@ -142,20 +159,28 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
     }
 
     private fun authenticate(authResponse: AuthorizationResponse) {
+        // busy during the code exchange, so a second tap cannot start a new authorization
+        uiState = uiState.copy(busy = true, error = null)
         viewModelScope.launch {
             try {
                 val authState = oAuthIntegration.authenticate(authService, authResponse)
-                val baseUrl = requireNotNull(OAuthDiscovery.normalizeBaseUrl(uiState.baseUrl))
+                val baseUri = URI(checkNotNull(uiState.normalizedBaseUrl) { "No base URL for this authorization" })
                 uiState = uiState.copy(
+                    busy = false,
                     result = LoginInfo(
-                        baseUri = URI(baseUrl),
+                        baseUri = baseUri,
                         credentials = Credentials(authState = authState),
-                        suggestedAccountName = URI(baseUrl).host
+                        suggestedAccountName = baseUri.host
                     )
                 )
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: AuthorizationException) {
                 logger.log(Level.WARNING, "OAuth code exchange failed", e)
-                uiState = uiState.copy(error = e.errorDescription ?: e.error ?: context.getString(R.string.login_oauth_couldnt_obtain_auth_code))
+                uiState = uiState.copy(busy = false, error = e.errorDescription ?: e.error ?: context.getString(R.string.login_oauth_couldnt_obtain_auth_code))
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "OAuth login failed", e)
+                uiState = uiState.copy(busy = false, error = e.message ?: e.javaClass.simpleName)
             }
         }
     }

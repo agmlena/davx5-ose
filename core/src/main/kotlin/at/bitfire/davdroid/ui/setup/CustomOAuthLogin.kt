@@ -72,6 +72,7 @@ object CustomOAuthLogin : LoginType {
             manualIssuer = uiState.manualIssuer,
             issuer = uiState.issuer, onSetIssuer = model::setIssuer,
             scopes = uiState.scopes, onSetScopes = model::setScopes,
+            advertisedScopes = uiState.advertisedScopes,
             busy = uiState.busy, error = uiState.error,
             canContinue = uiState.canContinue,
             onContinue = model::continueClicked
@@ -86,6 +87,7 @@ fun CustomOAuthLoginScreen(
     manualIssuer: Boolean,
     issuer: String, onSetIssuer: (String) -> Unit,
     scopes: String, onSetScopes: (String) -> Unit,
+    advertisedScopes: List<String>,
     busy: Boolean, error: String?,
     canContinue: Boolean,
     onContinue: () -> Unit
@@ -109,11 +111,14 @@ fun CustomOAuthLoginScreen(
                 label = { Text(stringResource(R.string.login_custom_oauth_issuer)) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
             )
-            OutlinedTextField(
-                value = scopes, onValueChange = onSetScopes, modifier = Modifier.fillMaxWidth(),
-                label = { Text(stringResource(R.string.login_custom_oauth_scopes)) }
-            )
         }
+        OutlinedTextField(
+            value = scopes, onValueChange = onSetScopes, modifier = Modifier.fillMaxWidth(),
+            label = { Text(stringResource(R.string.login_custom_oauth_scopes)) },
+            supportingText = if (advertisedScopes.isNotEmpty()) {
+                { Text(stringResource(R.string.login_custom_oauth_scopes_offered, advertisedScopes.joinToString(" "))) }
+            } else null
+        )
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(onClick = onContinue, enabled = canContinue, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.login_custom_oauth_sign_in))

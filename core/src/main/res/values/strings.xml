@@ -331,12 +331,14 @@
     <string name="login_fastmail_account">Fastmail account</string>
     <string name="login_fastmail_sign_in">Sign in with Fastmail</string>
     <string name="login_custom_oauth">Custom OAuth</string>
-    <string name="login_custom_oauth_account">OAuth server</string>
     <string name="login_custom_oauth_base_url">Server address (https://…)</string>
     <string name="login_custom_oauth_client_id">Client ID</string>
     <string name="login_custom_oauth_issuer">Issuer URL (https://…)</string>
     <string name="login_custom_oauth_scopes">Scopes</string>
     <string name="login_custom_oauth_sign_in">Sign in</string>
+    <string name="login_custom_oauth_scopes_offered">Server offers: %s</string>
+    <string name="login_custom_oauth_https_base_url">The server address must be an https:// URL</string>
+    <string name="login_custom_oauth_https_issuer">The issuer URL must be an https:// URL</string>
     <string name="login_type_google">Google Contacts / Calendar</string>
     <string name="login_google_account">Google account</string>
     <string name="login_google">Sign in with Google</string>
