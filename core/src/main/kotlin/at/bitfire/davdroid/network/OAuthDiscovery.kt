@@ -12,6 +12,9 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.CancellationException
+import java.net.URI
+import java.net.URISyntaxException
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -31,14 +34,19 @@ class OAuthDiscovery(
 ) {
 
     @Inject
-    constructor(builder: Provider<HttpClientBuilder>) : this({ builder.get().followRedirects(true).build() })
+    constructor(builder: Provider<HttpClientBuilder>) : this({ builder.get().build() })
 
     private val logger: Logger = Logger.getLogger(javaClass.name)
 
     suspend fun discover(baseUrl: String): DiscoveryOutcome {
         val normalized = normalizeBaseUrl(baseUrl) ?: return DiscoveryOutcome.Failed("The server address must be an https:// URL")
 
-        val candidates = if (java.net.URI(normalized).path.let { it.isNullOrEmpty() || it == "/" })
+        val path = try {
+            URI(normalized).path
+        } catch (e: URISyntaxException) {
+            return DiscoveryOutcome.Failed("The server address is not a valid URL")
+        }
+        val candidates = if (path.isNullOrEmpty() || path == "/")
             listOf(normalized.trimEnd('/') + "/.well-known/caldav", normalized.trimEnd('/') + "/.well-known/carddav")
         else
             listOf(normalized)
@@ -47,16 +55,35 @@ class OAuthDiscovery(
         newClient().use { client ->
             for (candidate in candidates) {
                 try {
-                    val response = client.request {
-                        url(candidate)
-                        method = HttpMethod("PROPFIND")
-                        header("Depth", "0")
+                    var currentUrl = candidate
+                    var hops = 0
+                    var response = propfind(client, currentUrl)
+                    while (response.status.value in REDIRECT_CODES) {
+                        val location = response.headers[HttpHeaders.Location]
+                        if (location == null) break
+                        if (++hops > MAX_REDIRECTS) {
+                            lastReason = "Too many redirects"
+                            break
+                        }
+                        val target = try {
+                            URI(currentUrl).resolve(location).toString()
+                        } catch (e: IllegalArgumentException) {
+                            null
+                        }
+                        if (target == null || !target.startsWith("https://", ignoreCase = true)) {
+                            lastReason = "The server redirected to a non-https or invalid address"
+                            hops = -1
+                            break
+                        }
+                        currentUrl = target
+                        response = propfind(client, currentUrl)
                     }
+                    if (hops > MAX_REDIRECTS || hops == -1) continue
                     if (response.status != HttpStatusCode.Unauthorized) {
                         lastReason = "The server did not ask for authentication (HTTP ${response.status.value})"
                         continue
                     }
-                    val finalUrl = response.call.request.url.toString()
+                    val finalUrl = currentUrl
                     val metadataUrl = OAuthMetadataParser.resourceMetadataUrl(response.headers.getAll(HttpHeaders.WWWAuthenticate).orEmpty())
                     if (metadataUrl == null) {
                         lastReason = "The server does not offer OAuth (no Bearer challenge with resource_metadata)"
@@ -78,6 +105,7 @@ class OAuthDiscovery(
                     }
                     return DiscoveryOutcome.Found(metadata)
                 } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     logger.log(Level.INFO, "OAuth discovery request failed", e)
                     lastReason = "Could not connect: ${e.message}"
                 }
@@ -86,7 +114,16 @@ class OAuthDiscovery(
         return DiscoveryOutcome.Failed(lastReason)
     }
 
+    private suspend fun propfind(client: HttpClient, url: String) = client.request {
+        url(url)
+        method = HttpMethod("PROPFIND")
+        header("Depth", "0")
+    }
+
     companion object {
+
+        private val REDIRECT_CODES = setOf(301, 302, 307, 308)
+        private const val MAX_REDIRECTS = 5
 
         /** Adds `https://` when no scheme is given; returns `null` for blank input or plain http. */
         fun normalizeBaseUrl(input: String): String? {
