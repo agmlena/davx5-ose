@@ -24,6 +24,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -119,26 +120,30 @@ class AndroidAccountManager @Inject constructor(
     ): Flow<Account?> = callbackFlow {
         val accountManager = accountManager.get()
 
+        // The listener is called on [handler]'s thread (main by default), but getAndroidAccount() reads the
+        // database, which Room forbids on the main thread. So hand the work to the flow's IO context.
         val listener = OnAccountsUpdateListener { accounts ->
-            val account = try {
-                getAndroidAccount(accountId)
-            } catch (_: InvalidAccountException) {
-                // DB Account not found
-                null
+            launch {
+                val account = try {
+                    getAndroidAccount(accountId)
+                } catch (_: InvalidAccountException) {
+                    // DB Account not found
+                    null
+                }
+                // If account was not found, emit null
+                if (account == null) {
+                    trySend(null)
+                    return@launch
+                }
+                // Once here, it's still possible that the account doesn't exist anymore, check it
+                if (!accounts.contains(account)) {
+                    // The updated accounts list that account manager gave us doesn't contain the account: it no longer exists
+                    trySend(null)
+                    return@launch
+                }
+                // Finally, the account does indeed exist, emit it
+                trySend(account)
             }
-            // If account was not found, emit null
-            if (account == null) {
-                trySend(null)
-                return@OnAccountsUpdateListener
-            }
-            // Once here, it's still possible that the account doesn't exist anymore, check it
-            if (!accounts.contains(account)) {
-                // The updated accounts list that account manager gave us doesn't contain the account: it no longer exists
-                trySend(null)
-                return@OnAccountsUpdateListener
-            }
-            // Finally, the account does indeed exist, emit it
-            trySend(account)
         }
         accountManager.addOnAccountsUpdatedListener(listener, handler, true)
 
