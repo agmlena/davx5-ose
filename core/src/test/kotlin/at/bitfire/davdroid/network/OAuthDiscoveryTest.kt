@@ -109,12 +109,73 @@ class OAuthDiscoveryTest {
     }
 
     @Test
-    fun `discover falls through from caldav to carddav candidate`() = runTest {
+    fun `discover falls through from caldav to carddav to the bare url`() = runTest {
         val d = discovery { _, _ -> HttpStatusCode.NotFound to (none to "") }
         assertTrue(d.discover("https://mail.example") is DiscoveryOutcome.Failed)
         assertEquals(listOf(
             "PROPFIND https://mail.example/.well-known/caldav",
-            "PROPFIND https://mail.example/.well-known/carddav"
+            "PROPFIND https://mail.example/.well-known/carddav",
+            "PROPFIND https://mail.example"
+        ), requests)
+    }
+
+    @Test
+    fun `discover finds the challenge on the bare url after both well-known paths fail`() = runTest {
+        val rootChallenge = mapOf(HttpHeaders.WWWAuthenticate to listOf(
+            """Bearer resource_metadata="https://mail.example/.well-known/oauth-protected-resource""""))
+        val rootMetadata = metadataJson.replace("https://mail.example/dav/cal/", "https://mail.example/")
+        val d = discovery { method, url ->
+            when {
+                url == "https://mail.example" && method == "PROPFIND" -> HttpStatusCode.Unauthorized to (rootChallenge to "")
+                url == "https://mail.example/.well-known/oauth-protected-resource" -> HttpStatusCode.OK to (none to rootMetadata)
+                else -> HttpStatusCode.NotFound to (none to "")
+            }
+        }
+        val out = d.discover("https://mail.example")
+        assertTrue(out.toString(), out is DiscoveryOutcome.Found)
+        assertEquals(listOf(
+            "PROPFIND https://mail.example/.well-known/caldav",
+            "PROPFIND https://mail.example/.well-known/carddav",
+            "PROPFIND https://mail.example",
+            "GET https://mail.example/.well-known/oauth-protected-resource"
+        ), requests)
+    }
+
+    @Test
+    fun `discover follows a 303 redirect`() = runTest {
+        val d = discovery { method, url ->
+            when {
+                url == "https://mail.example/dav/" -> HttpStatusCode.SeeOther to (mapOf(HttpHeaders.Location to listOf("https://mail.example/dav/cal/")) to "")
+                url == "https://mail.example/dav/cal/" && method == "PROPFIND" -> HttpStatusCode.Unauthorized to (challenge to "")
+                url.startsWith("https://mail.example/.well-known/oauth-protected-resource") -> HttpStatusCode.OK to (none to metadataJson)
+                else -> HttpStatusCode.NotFound to (none to "")
+            }
+        }
+        val out = d.discover("https://mail.example/dav/")
+        assertTrue(out.toString(), out is DiscoveryOutcome.Found)
+        assertEquals("PROPFIND https://mail.example/dav/cal/", requests[1])
+    }
+
+    @Test
+    fun `discover follows a relative Location like the live server`() = runTest {
+        val liveChallenge = mapOf(HttpHeaders.WWWAuthenticate to listOf(
+            """Bearer resource_metadata="https://mail.example/.well-known/oauth-protected-resource/dav/cal""""))
+        val liveMetadata = metadataJson.replace("https://mail.example/dav/cal/", "https://mail.example/dav/cal")
+        val d = discovery { method, url ->
+            when {
+                url == "https://mail.example/.well-known/caldav" && method == "PROPFIND" -> redirect("/dav/cal")
+                url == "https://mail.example/dav/cal" && method == "PROPFIND" -> HttpStatusCode.Unauthorized to (liveChallenge to "")
+                url == "https://mail.example/.well-known/oauth-protected-resource/dav/cal" -> HttpStatusCode.OK to (none to liveMetadata)
+                else -> HttpStatusCode.NotFound to (none to "")
+            }
+        }
+        val out = d.discover("mail.example")
+        assertTrue(out.toString(), out is DiscoveryOutcome.Found)
+        assertEquals("https://sso.example/application/o/app/", (out as DiscoveryOutcome.Found).metadata.issuer)
+        assertEquals(listOf(
+            "PROPFIND https://mail.example/.well-known/caldav",
+            "PROPFIND https://mail.example/dav/cal",
+            "GET https://mail.example/.well-known/oauth-protected-resource/dav/cal"
         ), requests)
     }
 

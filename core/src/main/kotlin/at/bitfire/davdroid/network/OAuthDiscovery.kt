@@ -47,7 +47,11 @@ class OAuthDiscovery(
             return DiscoveryOutcome.Failed("The server address is not a valid URL")
         }
         val candidates = if (path.isNullOrEmpty() || path == "/")
-            listOf(normalized.trimEnd('/') + "/.well-known/caldav", normalized.trimEnd('/') + "/.well-known/carddav")
+            listOf(
+                normalized.trimEnd('/') + "/.well-known/caldav",
+                normalized.trimEnd('/') + "/.well-known/carddav",
+                normalized      // servers that answer the challenge only on the root
+            )
         else
             listOf(normalized)
 
@@ -122,7 +126,7 @@ class OAuthDiscovery(
 
     companion object {
 
-        private val REDIRECT_CODES = setOf(301, 302, 307, 308)
+        private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
         private const val MAX_REDIRECTS = 5
 
         /** Adds `https://` when no scheme is given; returns `null` for blank input or plain http. */

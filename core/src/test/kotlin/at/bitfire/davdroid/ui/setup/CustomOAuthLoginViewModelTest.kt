@@ -46,6 +46,8 @@ class CustomOAuthLoginViewModelTest {
         every { getString(any()) } returns "error text"
         every { getString(R.string.login_custom_oauth_https_base_url) } returns HTTPS_BASE_URL_ERROR
         every { getString(R.string.login_custom_oauth_https_issuer) } returns HTTPS_ISSUER_ERROR
+        every { getString(R.string.login_custom_oauth_invalid_base_url) } returns INVALID_BASE_URL_ERROR
+        every { getString(R.string.login_custom_oauth_interrupted) } returns INTERRUPTED_ERROR
     }
 
     @Before fun setUp() { Dispatchers.setMain(StandardTestDispatcher()) }
@@ -246,9 +248,147 @@ class CustomOAuthLoginViewModelTest {
         assertFalse(vm.uiState.busy)
     }
 
+    @Test
+    fun `discovery is retried while the shown issuer field is blank`() = runTest {
+        coEvery { discovery.discover(any()) } returns DiscoveryOutcome.Failed("server down")
+        coEvery { custom.fetchConfiguration(any()) } returns mockk(relaxed = true)
+        every { custom.signIn(any(), any(), any()) } returns mockk(relaxed = true)
+        val vm = vm()
+        vm.setBaseUrl("mail.example"); vm.setClientId("c")
+        vm.continueClicked()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.manualIssuer)
+
+        // server is back, the user taps Continue again without typing an issuer
+        coEvery { discovery.discover(any()) } returns DiscoveryOutcome.Found(OAuthMetadata(ISSUER, listOf("openid")))
+        vm.continueClicked()
+        advanceUntilIdle()
+        coVerify(exactly = 2) { discovery.discover("https://mail.example") }
+        assertNotNull(vm.uiState.pendingRequest)
+        assertNull(vm.uiState.error)
+    }
+
+    @Test
+    fun `discovery is retried after the user fixes the base url`() = runTest {
+        coEvery { discovery.discover("https://mail.exmaple") } returns DiscoveryOutcome.Failed("unknown host")
+        coEvery { discovery.discover("https://mail.example") } returns DiscoveryOutcome.Found(OAuthMetadata(ISSUER, listOf("openid")))
+        coEvery { custom.fetchConfiguration(any()) } returns mockk(relaxed = true)
+        every { custom.signIn(any(), any(), any()) } returns mockk(relaxed = true)
+        val vm = vm()
+        vm.setBaseUrl("mail.exmaple"); vm.setClientId("c")
+        vm.continueClicked()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.manualIssuer)
+
+        vm.setBaseUrl("mail.example")
+        vm.continueClicked()
+        advanceUntilIdle()
+        coVerify(exactly = 1) { discovery.discover("https://mail.example") }
+        coVerify { custom.fetchConfiguration(ISSUER) }
+        assertNotNull(vm.uiState.pendingRequest)
+    }
+
+    @Test
+    fun `a failing issuer configuration prefills the discovered issuer and names the step`() = runTest {
+        coEvery { discovery.discover(any()) } returns DiscoveryOutcome.Found(OAuthMetadata(ISSUER, listOf("openid")))
+        coEvery { custom.fetchConfiguration(any()) } throws java.io.IOException("boom")
+        every { context.getString(R.string.login_custom_oauth_issuer_config_failed, "boom") } returns "config failed: boom"
+        val vm = vm()
+        vm.setBaseUrl("mail.example"); vm.setClientId("c")
+        vm.continueClicked()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.manualIssuer)
+        assertEquals(ISSUER, vm.uiState.issuer)
+        assertEquals("config failed: boom", vm.uiState.error)
+        assertNull(vm.uiState.pendingRequest)
+        assertFalse(vm.uiState.busy)
+    }
+
+    @Test
+    fun `an issuer configuration failure without message names the exception class`() = runTest {
+        coEvery { discovery.discover(any()) } returns DiscoveryOutcome.Found(OAuthMetadata(ISSUER, listOf("openid")))
+        coEvery { custom.fetchConfiguration(any()) } throws IllegalStateException()
+        every { context.getString(R.string.login_custom_oauth_issuer_config_failed, "IllegalStateException") } returns "config failed: ISE"
+        val vm = vm()
+        vm.setBaseUrl("mail.example"); vm.setClientId("c")
+        vm.continueClicked()
+        advanceUntilIdle()
+        assertEquals("config failed: ISE", vm.uiState.error)
+    }
+
+    @Test
+    fun `changing the base url drops an issuer that came from discovery but keeps a typed one`() = runTest {
+        coEvery { discovery.discover(any()) } returns DiscoveryOutcome.Found(OAuthMetadata(ISSUER, listOf("openid")))
+        coEvery { custom.fetchConfiguration(any()) } throws java.io.IOException("boom")
+        val vm = vm()
+        vm.setBaseUrl("mail.example"); vm.setClientId("c")
+        vm.continueClicked()
+        advanceUntilIdle()
+        assertEquals(ISSUER, vm.uiState.issuer)
+
+        vm.setBaseUrl("other.example")
+        assertEquals("", vm.uiState.issuer)
+
+        vm.setIssuer("https://typed.example")
+        vm.setBaseUrl("third.example")
+        assertEquals("https://typed.example", vm.uiState.issuer)
+    }
+
+    @Test
+    fun `a non-blank manual issuer skips discovery`() = runTest {
+        coEvery { custom.fetchConfiguration(any()) } returns mockk(relaxed = true)
+        every { custom.signIn(any(), any(), any()) } returns mockk(relaxed = true)
+        val vm = vm()
+        vm.setBaseUrl("mail.example"); vm.setClientId("c")
+        vm.showManualIssuer()
+        vm.setIssuer("https://sso.example")
+        vm.continueClicked()
+        advanceUntilIdle()
+        coVerify(exactly = 0) { discovery.discover(any()) }
+        coVerify { custom.fetchConfiguration("https://sso.example") }
+        assertNotNull(vm.uiState.pendingRequest)
+    }
+
+    @Test
+    fun `an invalid address is refused on both paths`() = runTest {
+        coEvery { discovery.discover(any()) } returns DiscoveryOutcome.Found(OAuthMetadata(ISSUER, listOf("openid")))
+        coEvery { custom.fetchConfiguration(any()) } returns mockk(relaxed = true)
+        every { custom.signIn(any(), any(), any()) } returns mockk(relaxed = true)
+        for (address in listOf("mail example", "https://"))
+            for (manual in listOf(false, true)) {
+                val vm = vm()
+                vm.setBaseUrl(address); vm.setClientId("c")
+                if (manual) {
+                    vm.showManualIssuer()
+                    vm.setIssuer("https://sso.example")
+                }
+                vm.continueClicked()
+                advanceUntilIdle()
+                assertEquals("$address manual=$manual", INVALID_BASE_URL_ERROR, vm.uiState.error)
+                assertNull(vm.uiState.pendingRequest)
+                assertFalse(vm.uiState.busy)
+            }
+        coVerify(exactly = 0) { discovery.discover(any()) }
+        coVerify(exactly = 0) { custom.fetchConfiguration(any()) }
+    }
+
+    @Test
+    fun `a browser result after process death asks to retry without exchanging the code`() = runTest {
+        val vm = vm()       // fresh: no normalizedBaseUrl, as after the ViewModel was recreated
+        vm.setBaseUrl("mail.example"); vm.setClientId("c")
+        vm.onAuthResult(OAuthResult.Success(mockk(relaxed = true)))
+        advanceUntilIdle()
+        assertEquals(INTERRUPTED_ERROR, vm.uiState.error)
+        assertNull(vm.uiState.result)
+        assertFalse(vm.uiState.busy)
+        coVerify(exactly = 0) { integration.authenticate(any(), any()) }
+    }
+
     companion object {
         const val ISSUER = "https://sso.example/o/app/"
         const val HTTPS_BASE_URL_ERROR = "base url must be https"
+        const val INVALID_BASE_URL_ERROR = "base url is not a valid address"
         const val HTTPS_ISSUER_ERROR = "issuer must be https"
+        const val INTERRUPTED_ERROR = "sign-in was interrupted"
     }
 }

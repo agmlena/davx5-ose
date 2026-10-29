@@ -5,6 +5,7 @@
 package at.bitfire.davdroid.ui.setup
 
 import android.content.Context
+import androidx.annotation.StringRes
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -28,6 +29,7 @@ import net.openid.appauth.AuthorizationRequest
 import net.openid.appauth.AuthorizationResponse
 import net.openid.appauth.AuthorizationService
 import java.net.URI
+import java.net.URISyntaxException
 import java.util.logging.Level
 import java.util.logging.Logger
 
@@ -56,6 +58,8 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
         val baseUrl: String = "",
         val clientId: String = "",
         val issuer: String = "",
+        /** [issuer] was prefilled from discovery (not typed), so it belongs to the current [baseUrl] only */
+        val issuerFromDiscovery: Boolean = false,
         val scopes: String = OAuthCustom.DEFAULT_SCOPES.joinToString(" "),
         val manualIssuer: Boolean = false,
         /** `scopes_supported` from the discovered metadata, shown as a hint only */
@@ -81,32 +85,46 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
         uiState = uiState.copy(baseUrl = initialLoginInfo.baseUri?.toString() ?: "")
     }
 
-    fun setBaseUrl(value: String) { uiState = uiState.copy(baseUrl = value) }
+    fun setBaseUrl(value: String) {
+        val state = uiState
+        if (value == state.baseUrl)
+            return
+        // an issuer that discovery found for the old address does not apply to the new one; a typed one stays
+        val issuer = if (state.issuerFromDiscovery) "" else state.issuer
+        uiState = state.copy(
+            baseUrl = value,
+            issuer = issuer,
+            issuerFromDiscovery = false,
+            manualIssuer = state.manualIssuer && issuer.isNotBlank(),
+            advertisedScopes = emptyList()
+        )
+    }
     fun setClientId(value: String) { uiState = uiState.copy(clientId = value) }
-    fun setIssuer(value: String) { uiState = uiState.copy(issuer = value) }
+    fun setIssuer(value: String) { uiState = uiState.copy(issuer = value, issuerFromDiscovery = false) }
     fun setScopes(value: String) { uiState = uiState.copy(scopes = value) }
     fun showManualIssuer() { uiState = uiState.copy(manualIssuer = true) }
 
-    /** Starts discovery (or uses the manual issuer) and prepares the authorization request. */
+    /**
+     * Validates the base URL, takes the typed issuer or (when the issuer field is blank) runs discovery,
+     * and prepares the authorization request.
+     */
     fun continueClicked() {
         val state = uiState
         uiState = state.copy(busy = true, error = null, pendingRequest = null, normalizedBaseUrl = null)
+
+        // the base URL must be a valid https URL on both paths: it receives the Bearer token later
+        val baseUrl = validBaseUrlOrShowError(state.baseUrl) ?: return
+
         viewModelScope.launch {
             try {
-                // the base URL must be https on both paths: it receives the Bearer token later
-                val baseUrl = OAuthDiscovery.normalizeBaseUrl(state.baseUrl)
-                if (baseUrl == null) {
-                    uiState = uiState.copy(busy = false, error = context.getString(R.string.login_custom_oauth_https_base_url))
-                    return@launch
-                }
-
-                val issuer = if (state.manualIssuer) {
-                    state.issuer.trim().also {
-                        if (!it.startsWith("https://", ignoreCase = true)) {
-                            uiState = uiState.copy(busy = false, error = context.getString(R.string.login_custom_oauth_https_issuer))
-                            return@launch
-                        }
+                val typedIssuer = state.issuer.trim()
+                val fromDiscovery = typedIssuer.isEmpty()
+                val issuer = if (!fromDiscovery) {
+                    if (!typedIssuer.startsWith("https://", ignoreCase = true)) {
+                        showError(R.string.login_custom_oauth_https_issuer)
+                        return@launch
                     }
+                    typedIssuer
                 } else when (val outcome = discovery.discover(baseUrl)) {
                     is DiscoveryOutcome.Found -> {
                         uiState = uiState.copy(advertisedScopes = outcome.metadata.scopesSupported)
@@ -118,7 +136,22 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
                     }
                 }
 
-                val config = oAuthCustom.fetchConfiguration(issuer)
+                val config = try {
+                    oAuthCustom.fetchConfiguration(issuer)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.log(Level.WARNING, "Couldn't read the issuer configuration of $issuer", e)
+                    uiState = uiState.copy(
+                        busy = false,
+                        manualIssuer = true,
+                        // show the discovered issuer, so the user sees what failed and can correct it
+                        issuer = if (fromDiscovery) issuer else uiState.issuer,
+                        issuerFromDiscovery = fromDiscovery || state.issuerFromDiscovery,
+                        error = context.getString(R.string.login_custom_oauth_issuer_config_failed, e.message ?: e.javaClass.simpleName)
+                    )
+                    return@launch
+                }
                 // AppAuth sends no scope at all for an empty list, so fall back to the defaults
                 val scopes = state.scopes.split(' ', '\n').filter { it.isNotBlank() }
                     .ifEmpty { OAuthCustom.DEFAULT_SCOPES }
@@ -131,6 +164,29 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
                 uiState = uiState.copy(busy = false, manualIssuer = true, error = e.message ?: e.javaClass.simpleName)
             }
         }
+    }
+
+    /** Returns the normalised https base URL, or `null` after showing why it cannot be used. */
+    private fun validBaseUrlOrShowError(input: String): String? {
+        val normalized = OAuthDiscovery.normalizeBaseUrl(input)
+        if (normalized == null) {
+            showError(R.string.login_custom_oauth_https_base_url)
+            return null
+        }
+        val host = try {
+            URI(normalized).host
+        } catch (_: URISyntaxException) {
+            null
+        }
+        if (host == null) {
+            showError(R.string.login_custom_oauth_invalid_base_url)
+            return null
+        }
+        return normalized
+    }
+
+    private fun showError(@StringRes message: Int) {
+        uiState = uiState.copy(busy = false, error = context.getString(message))
     }
 
     fun requestLaunched() { uiState = uiState.copy(pendingRequest = null) }
@@ -159,12 +215,20 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
     }
 
     private fun authenticate(authResponse: AuthorizationResponse) {
+        // After process death while the browser was open, the ViewModel is new and does not know which
+        // server the request was for. Don't exchange the code in that case; ask the user to start again.
+        val baseUrl = uiState.normalizedBaseUrl
+        if (baseUrl == null) {
+            showError(R.string.login_custom_oauth_interrupted)
+            return
+        }
+
         // busy during the code exchange, so a second tap cannot start a new authorization
         uiState = uiState.copy(busy = true, error = null)
         viewModelScope.launch {
             try {
                 val authState = oAuthIntegration.authenticate(authService, authResponse)
-                val baseUri = URI(checkNotNull(uiState.normalizedBaseUrl) { "No base URL for this authorization" })
+                val baseUri = URI(baseUrl)
                 uiState = uiState.copy(
                     busy = false,
                     result = LoginInfo(

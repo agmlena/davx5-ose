@@ -339,6 +339,9 @@
     <string name="login_custom_oauth_scopes_offered">Server offers: %s</string>
     <string name="login_custom_oauth_https_base_url">The server address must be an https:// URL</string>
     <string name="login_custom_oauth_https_issuer">The issuer URL must be an https:// URL</string>
+    <string name="login_custom_oauth_invalid_base_url">The server address is not a valid address</string>
+    <string name="login_custom_oauth_issuer_config_failed">Could not read the issuer configuration: %1$s</string>
+    <string name="login_custom_oauth_interrupted">Sign-in was interrupted, please try again</string>
     <string name="login_type_google">Google Contacts / Calendar</string>
     <string name="login_google_account">Google account</string>
     <string name="login_google">Sign in with Google</string>

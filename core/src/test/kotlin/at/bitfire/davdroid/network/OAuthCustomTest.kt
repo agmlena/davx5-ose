@@ -9,6 +9,7 @@ import io.mockk.every
 import io.mockk.mockk
 import net.openid.appauth.AuthorizationServiceConfiguration
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -35,6 +36,31 @@ class OAuthCustomTest {
         assertTrue(req.codeVerifier!!.length >= 43)
         assertEquals("openid offline_access", req.scope)
         assertEquals("at.bitfire.davdroid:/oauth2/redirect", req.redirectUri.toString())
+    }
+
+    @Test
+    fun `requireHttpsEndpoints refuses an http token endpoint`() {
+        val httpToken = AuthorizationServiceConfiguration(
+            Uri.parse("https://sso.example/authorize"), Uri.parse("http://sso.example/token")
+        )
+        val e = assertThrows(IllegalStateException::class.java) { OAuthCustom.requireHttpsEndpoints(httpToken) }
+        assertTrue(e.message, e.message!!.contains("http://sso.example/token"))
+    }
+
+    @Test
+    fun `requireHttpsEndpoints refuses an http authorization endpoint`() {
+        val httpAuth = AuthorizationServiceConfiguration(
+            Uri.parse("http://sso.example/authorize"), Uri.parse("https://sso.example/token")
+        )
+        assertThrows(IllegalStateException::class.java) { OAuthCustom.requireHttpsEndpoints(httpAuth) }
+    }
+
+    @Test
+    fun `requireHttpsEndpoints accepts https endpoints`() {
+        OAuthCustom.requireHttpsEndpoints(config)
+        OAuthCustom.requireHttpsEndpoints(AuthorizationServiceConfiguration(
+            Uri.parse("HTTPS://sso.example/authorize"), Uri.parse("https://sso.example/token")
+        ))
     }
 
     @Test
