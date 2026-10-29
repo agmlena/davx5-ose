@@ -391,4 +391,35 @@ class CustomOAuthLoginViewModelTest {
         const val HTTPS_ISSUER_ERROR = "issuer must be https"
         const val INTERRUPTED_ERROR = "sign-in was interrupted"
     }
+
+    @Test
+    fun `editing the base url keeps the issuer field visible and clears the stale error`() = runTest {
+        coEvery { discovery.discover(any()) } returns DiscoveryOutcome.Failed("no bearer challenge")
+        val vm = vm()
+        vm.setBaseUrl("sso.example"); vm.setClientId("c")
+        vm.continueClicked()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.manualIssuer)
+        assertNotNull(vm.uiState.error)
+
+        vm.setBaseUrl("mail.example")
+        assertTrue(vm.uiState.manualIssuer)
+        assertEquals("", vm.uiState.issuer)
+        assertNull(vm.uiState.error)
+    }
+
+    @Test
+    fun `editing the client id, issuer or scopes clears the stale error`() = runTest {
+        coEvery { discovery.discover(any()) } returns DiscoveryOutcome.Failed("no bearer challenge")
+        val vm = vm()
+        vm.setBaseUrl("sso.example"); vm.setClientId("c")
+        for (edit in listOf<() -> Unit>({ vm.setClientId("d") }, { vm.setIssuer("https://i.example") }, { vm.setScopes("openid") })) {
+            vm.continueClicked()
+            advanceUntilIdle()
+            assertNotNull(vm.uiState.error)
+            edit()
+            assertNull(vm.uiState.error)
+        }
+    }
+
 }

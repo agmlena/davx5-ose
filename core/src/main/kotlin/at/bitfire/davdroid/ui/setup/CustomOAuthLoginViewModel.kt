@@ -89,19 +89,21 @@ class CustomOAuthLoginViewModel @AssistedInject constructor(
         val state = uiState
         if (value == state.baseUrl)
             return
-        // an issuer that discovery found for the old address does not apply to the new one; a typed one stays
+        // an issuer that discovery found for the old address does not apply to the new one; a typed one stays.
+        // The issuer field stays visible once shown (blank means "discover it again"), and the error described
+        // the old input, so it goes.
         val issuer = if (state.issuerFromDiscovery) "" else state.issuer
         uiState = state.copy(
             baseUrl = value,
             issuer = issuer,
             issuerFromDiscovery = false,
-            manualIssuer = state.manualIssuer && issuer.isNotBlank(),
-            advertisedScopes = emptyList()
+            advertisedScopes = emptyList(),
+            error = null
         )
     }
-    fun setClientId(value: String) { uiState = uiState.copy(clientId = value) }
-    fun setIssuer(value: String) { uiState = uiState.copy(issuer = value, issuerFromDiscovery = false) }
-    fun setScopes(value: String) { uiState = uiState.copy(scopes = value) }
+    fun setClientId(value: String) { uiState = uiState.copy(clientId = value, error = null) }
+    fun setIssuer(value: String) { uiState = uiState.copy(issuer = value, issuerFromDiscovery = false, error = null) }
+    fun setScopes(value: String) { uiState = uiState.copy(scopes = value, error = null) }
     fun showManualIssuer() { uiState = uiState.copy(manualIssuer = true) }
 
     /**
